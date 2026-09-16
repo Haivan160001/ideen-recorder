@@ -54,6 +54,19 @@
   #hint.err { color:var(--rec); }
   #hint.good { color:var(--ok); }
 
+  #geteilt {
+    display:none; background:#14243d; border:1px solid #29456f; border-radius:12px;
+    padding:12px 14px; margin-bottom:10px;
+  }
+  #geteilt.on { display:block; }
+  #geteilt .kopf { font-size:14px; font-weight:600; margin-bottom:3px; }
+  #geteilt .datei { font-size:12px; color:#93a7c4; word-break:break-all; }
+  #geteilt .tasten { display:flex; gap:8px; margin-top:10px; }
+  #geteilt button {
+    flex:1; padding:9px; font-size:12.5px; border:none; border-radius:9px;
+    background:#24405f; color:#dbe6f5;
+  }
+
   .day { font-size:11px; letter-spacing:.09em; text-transform:uppercase;
          color:var(--dim); margin:18px 0 8px; }
   .item {
@@ -62,6 +75,7 @@
   }
   .item .txt { font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
   .item .txt[contenteditable="true"] { outline:2px solid var(--accent); outline-offset:3px; border-radius:4px; }
+  .item .bild { font-size:12.5px; color:#8fa6c6; margin-top:6px; word-break:break-all; }
   .meta { display:flex; align-items:center; gap:14px; margin-top:9px; }
   .meta time { font-size:12px; color:var(--dim); margin-right:auto; }
   .meta button { background:none; border:none; padding:2px 0; font-size:12.5px; color:var(--dim); }
@@ -81,6 +95,7 @@
 <main id="list"></main>
 
 <div id="dock">
+  <div id="geteilt"></div>
   <div id="live"></div>
   <button id="rec">Aufnahme starten</button>
   <div id="bar">
@@ -152,10 +167,15 @@ function render(newId) {
     el.className = 'item' + (e.id === newId ? ' new' : '');
     el.innerHTML =
       '<div class="txt"></div>' +
+      (e.bild ? '<div class="bild"></div>' : '') +
       '<div class="meta"><time>' + TIMEFMT.format(d) + ' Uhr</time>' +
       '<button class="edit">bearbeiten</button>' +
       '<button class="del">löschen</button></div>';
     el.querySelector('.txt').textContent = e.text;
+    if (e.bild) {
+      el.querySelector('.bild').textContent =
+        '🖼️ ' + (e.bild.name || 'Screenshot ohne Dateinamen');
+    }
     list.appendChild(el);
 
     var txt = el.querySelector('.txt');
@@ -287,24 +307,97 @@ function stopRecording() {
   try { rec && rec.stop(); } catch (e) { finish(); }
 }
 
-function finish() {
-  recording = false;
-  $('#rec').classList.remove('on');
-  $('#rec').textContent = 'Aufnahme starten';
-  $('#live').classList.remove('on');
-
-  var text = fullText();
-  doneChunks = []; liveChunks = [];
-  if (!text) { hint('Nichts verstanden — nichts gespeichert.', 'err'); return; }
-
-  var entry = { id: uid(), text: text, ts: Date.now(), source: 'voice' };
+function speichern(text, bild) {
+  var entry = { id: uid(), text: text, ts: Date.now(),
+                source: bild ? 'bild' : 'voice' };
+  if (bild) entry.bild = bild;
   entries.push(entry);
   persist();
   render(entry.id);
   hint('Gespeichert.', 'good');
 }
 
+function finish() {
+  recording = false;
+  $('#rec').classList.remove('on');
+  $('#live').classList.remove('on');
+
+  var text = fullText();
+  doneChunks = []; liveChunks = [];
+
+  if (!text && !geteilt) {
+    beschriftung();
+    hint('Nichts verstanden — nichts gespeichert.', 'err');
+    return;
+  }
+  speichern(text, geteilt);
+  geteilt = null;
+  zeigeGeteilt();
+}
+
 $('#rec').onclick = function () { recording ? stopRecording() : startRecording(); };
+
+/* ---------- Geteilter Screenshot ----------
+   Android schickt geteilte Bilder per POST an ./teilen; der Service Worker
+   nimmt sie entgegen und leitet die Angaben zur Datei hierher um. Das Bild
+   selbst bleibt auf dem Geraet und wird spaeter per USB abgeholt. */
+var geteilt = null;
+
+function kb(n) {
+  n = Number(n) || 0;
+  return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
+}
+
+function beschriftung() {
+  $('#rec').textContent = geteilt
+    ? '🎤 Notiz zum Screenshot sprechen'
+    : 'Aufnahme starten';
+}
+
+function zeigeGeteilt() {
+  var el = $('#geteilt');
+  if (!geteilt) { el.classList.remove('on'); beschriftung(); return; }
+  el.innerHTML =
+    '<div class="kopf">🖼️ Screenshot übernommen</div>' +
+    '<div class="datei"></div>' +
+    '<div class="tasten">' +
+    '<button id="gOhne">Ohne Notiz speichern</button>' +
+    '<button id="gWeg">Verwerfen</button></div>';
+  el.querySelector('.datei').textContent =
+    (geteilt.name || 'ohne Dateinamen') + ' · ' + kb(geteilt.groesse);
+  el.classList.add('on');
+  beschriftung();
+
+  $('#gOhne').onclick = function () {
+    speichern('', geteilt);
+    geteilt = null; zeigeGeteilt();
+  };
+  $('#gWeg').onclick = function () {
+    geteilt = null; zeigeGeteilt();
+    hint('Screenshot verworfen.');
+  };
+}
+
+(function pruefeGeteiltes() {
+  var p = new URLSearchParams(location.search);
+  if (!p.toString()) return;
+
+  if (p.get('fehler')) {
+    hint('Teilen fehlgeschlagen: ' + p.get('fehler'), 'err');
+  } else if (p.has('bild') || p.has('groesse')) {
+    geteilt = {
+      name: p.get('bild') || '',
+      groesse: Number(p.get('groesse') || 0),
+      typ: p.get('typ') || '',
+      stand: Number(p.get('stand') || 0)
+    };
+    var t = p.get('text');
+    if (t) geteilt.mitgeteilt = t;
+    zeigeGeteilt();
+  }
+  // Adresszeile saeubern, damit ein Neuladen nichts doppelt aufnimmt.
+  history.replaceState(null, '', location.pathname);
+})();
 
 /* ---------- Export fuer den PC ---------- */
 $('#export').onclick = function () {
