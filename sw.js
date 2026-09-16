@@ -1,7 +1,8 @@
 /* Haelt die App-Huelle offline verfuegbar. Die Spracherkennung selbst
    braucht trotzdem Internet, da Chrome sie serverseitig ausfuehrt. */
-var CACHE = 'ideen-v1';
-var SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+var CACHE = 'ideen-v2';
+var SHELL = ['./', './index.html', './assemble.js', './manifest.webmanifest',
+             './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () {

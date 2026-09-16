@@ -90,6 +90,7 @@
   <div id="hint"></div>
 </div>
 
+<script src="assemble.js"></script>
 <script>
 var $ = function (s) { return document.querySelector(s); };
 var KEY = 'ideen.entries.v1';
@@ -202,8 +203,8 @@ var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 var rec = null;         /* aktuelle Recognition-Instanz */
 var recording = false;  /* Aufnahme aus Nutzersicht aktiv */
 var stopping = false;   /* Nutzer hat Stop gedrueckt */
-var committed = '';     /* Text aus vorherigen Teilsitzungen dieser Aufnahme */
-var live = '';          /* Text der laufenden Teilsitzung */
+var doneChunks = [];    /* Teilergebnisse abgeschlossener Teilsitzungen */
+var liveChunks = [];    /* Teilergebnisse der laufenden Teilsitzung */
 
 if (!SR) {
   $('#rec').disabled = true;
@@ -212,7 +213,7 @@ if (!SR) {
 }
 
 function fullText() {
-  return (committed + ' ' + live).replace(/\s+/g, ' ').trim();
+  return assembleTranscript(doneChunks.concat(liveChunks));
 }
 
 function paintLive() {
@@ -230,13 +231,14 @@ function build() {
   r.interimResults = true;
   r.maxAlternatives = 1;
 
-  /* Chrome/Android markiert Teilergebnisse teils als isFinal und sendet den
-     wachsenden Satz erneut. Darum den Text je Teilsitzung komplett neu
-     aufbauen, statt Fragmente anzuhaengen. */
+  /* Alle Fassungen der laufenden Teilsitzung einsammeln. Das Zusammensetzen
+     uebernimmt assembleTranscript(); dort ist auch beschrieben, warum blosses
+     Aneinanderhaengen auf Android Wortsalat ergibt. */
   r.onresult = function (ev) {
-    var t = '';
-    for (var i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
-    live = t.replace(/\s+/g, ' ').trim();
+    liveChunks = [];
+    for (var i = 0; i < ev.results.length; i++) {
+      liveChunks.push(ev.results[i][0].transcript);
+    }
     paintLive();
   };
 
@@ -256,7 +258,7 @@ function build() {
   /* Android beendet die Erkennung oft von selbst nach kurzen Pausen. Solange
      der Nutzer nicht gestoppt hat, nahtlos eine neue Sitzung anhaengen. */
   r.onend = function () {
-    if (live) { committed = (committed + ' ' + live).trim(); live = ''; }
+    if (liveChunks.length) { doneChunks = doneChunks.concat(liveChunks); liveChunks = []; }
     if (!stopping) {
       try { rec = build(); rec.start(); return; }
       catch (e) { /* faellt durch zum Abschluss */ }
@@ -268,7 +270,7 @@ function build() {
 }
 
 function startRecording() {
-  committed = ''; live = '';
+  doneChunks = []; liveChunks = [];
   recording = true; stopping = false;
   $('#live').classList.add('on');
   paintLive();
@@ -292,7 +294,7 @@ function finish() {
   $('#live').classList.remove('on');
 
   var text = fullText();
-  committed = ''; live = '';
+  doneChunks = []; liveChunks = [];
   if (!text) { hint('Nichts verstanden — nichts gespeichert.', 'err'); return; }
 
   var entry = { id: uid(), text: text, ts: Date.now(), source: 'voice' };

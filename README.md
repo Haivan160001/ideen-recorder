@@ -63,19 +63,45 @@ PC-Seite entdoppelt über `id` — so geht nichts verloren, wenn ein Export mal
 
 | Datei | Zweck |
 |---|---|
-| `index.html` | Die komplette App — Oberfläche, Spracherkennung, Speicher, Export |
-| `manifest.webmanifest` | Macht sie auf dem Homescreen installierbar |
+| `index.html` | Oberfläche, Aufnahmesteuerung, Speicher, Export |
+| `assemble.js` | Setzt die Teilergebnisse der Erkennung zum gesprochenen Text zusammen |
+| `test-assemble.js` | Testfälle dazu, inklusive echter Bruchstücke vom Gerät |
+| `manifest.webmanifest` | Macht die App auf dem Homescreen installierbar |
 | `sw.js` | Service Worker, hält die App-Hülle offline bereit |
-| `icon-192.png`, `icon-512.png` | App-Icons, erzeugt per Skript |
+| `icon-192.png`, `icon-512.png` | App-Icons, per Skript erzeugt |
 
-## Bekannte Eigenheit von Chrome auf Android
+Tests laufen ohne Node im Windows Script Host:
 
-Chrome markiert dort **Teil**ergebnisse fälschlich als `isFinal` und schickt den
-wachsenden Satz jedes Mal vollständig erneut. Wer die Fragmente aneinanderhängt,
-bekommt `"ich ich ich benötige ich benötige einen …"`. Deshalb baut
-`onresult` den Text bei jedem Ereignis komplett aus `results` neu auf, statt ihn
-fortzuschreiben.
+```
+cscript //nologo //E:JScript test-assemble.js
+```
+
+## Warum `assemble.js` existiert
+
+Chrome auf Android hält sich nicht an die Web-Speech-Semantik. Statt ein
+Ergebnis fortzuschreiben, legt es **jede Zwischenfassung als eigenen Eintrag**
+in `results` ab und markiert sie obendrein als endgültig:
+
+```js
+["der", "der Terminkalender", "der Terminkalender soll", "nicht", "nicht jetzt"]
+```
+
+Beide naheliegenden Auswertungen gehen schief: neue Endergebnisse anhängen
+ergibt `"der der Terminkalender der Terminkalender soll …"`, und das Array
+zusammenzufügen ebenfalls. Richtig ist, aufeinander aufbauende Fassungen
+einander **ersetzen** zu lassen und nur bei einem echten Bruch einen neuen
+Abschnitt zu beginnen.
+
+Drei Fälle treten dabei real auf — alle drei sind in `test-assemble.js` mit
+Aufnahmen vom Gerät belegt:
+
+| Fall | Beispiel | Behandlung |
+|---|---|---|
+| Verlängerung | `"der Termin"` → `"der Termin soll"` | ersetzt die vorige Fassung |
+| Selbstkorrektur | `"…E-Mails und mein"` → `"…E-Mail von mein"` | gleicher Anfang → gleiche Fassung, die längere gewinnt |
+| Neuer Abschnitt | `"…und die"` + `"die Termine"` | angehängt, Wortüberlappung am Rand wird entfernt |
 
 Zusätzlich beendet Android die Erkennung nach kurzen Sprechpausen von selbst.
-`onend` startet darum eine neue Teilsitzung und hängt deren Text an, solange der
-Nutzer nicht auf Stoppen getippt hat.
+`onend` startet darum eine neue Teilsitzung, solange nicht auf Stoppen getippt
+wurde; die Bruchstücke aller Teilsitzungen werden gesammelt und erst am Ende
+zusammengesetzt.
