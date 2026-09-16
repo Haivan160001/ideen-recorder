@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Ideen-Recorder</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0f1115; --card:#171b24; --line:#262c3a; --fg:#e8eaf0;
+    --dim:#8b93a7; --accent:#2f6df6; --rec:#e0344a; --ok:#46c877;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { overscroll-behavior-y:contain; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg); min-height:100dvh;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:16px 16px calc(215px + env(safe-area-inset-bottom));
+  }
+  header { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
+  h1 { font-size:18px; margin:0; letter-spacing:-.01em; }
+  #count { font-size:13px; color:var(--dim); }
+
+  #dock {
+    position:fixed; left:0; right:0; bottom:0; z-index:10;
+    background:linear-gradient(180deg,rgba(15,17,21,0) 0%,var(--bg) 22%);
+    padding:26px 16px calc(14px + env(safe-area-inset-bottom));
+  }
+  #live {
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:12px 14px; margin-bottom:10px; font-size:16px; line-height:1.5;
+    min-height:54px; max-height:130px; overflow-y:auto; display:none;
+    word-break:break-word;
+  }
+  #live.on { display:block; }
+  #live.ghost { color:var(--dim); }
+  #rec {
+    width:100%; padding:22px; font-size:18px; font-weight:600; border:none;
+    border-radius:16px; background:var(--accent); color:#fff; display:block;
+    transition:background .15s;
+  }
+  #rec.on { background:var(--rec); }
+  #rec:disabled { background:#333a49; color:#7a8296; }
+  #bar { display:flex; gap:8px; margin-top:8px; }
+  #bar button {
+    flex:1; padding:11px; font-size:13px; border:none; border-radius:10px;
+    background:#242a38; color:#c9d0e0;
+  }
+  #hint { font-size:12px; color:var(--dim); text-align:center; margin-top:9px; min-height:16px; }
+  #hint.err { color:var(--rec); }
+  #hint.good { color:var(--ok); }
+
+  .day { font-size:11px; letter-spacing:.09em; text-transform:uppercase;
+         color:var(--dim); margin:18px 0 8px; }
+  .item {
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:13px 14px; margin-bottom:8px;
+  }
+  .item .txt { font-size:16px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+  .item .txt[contenteditable="true"] { outline:2px solid var(--accent); outline-offset:3px; border-radius:4px; }
+  .meta { display:flex; align-items:center; gap:14px; margin-top:9px; }
+  .meta time { font-size:12px; color:var(--dim); margin-right:auto; }
+  .meta button { background:none; border:none; padding:2px 0; font-size:12.5px; color:var(--dim); }
+  .meta button.del { color:#c0566a; }
+  .new { animation:pop .35s ease; }
+  @keyframes pop { from { opacity:0; transform:translateY(-6px); } }
+  #empty { text-align:center; color:var(--dim); font-size:14px; padding:44px 20px; line-height:1.6; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#127908; Ideen-Recorder</h1>
+  <span id="count"></span>
+</header>
+
+<main id="list"></main>
+
+<div id="dock">
+  <div id="live"></div>
+  <button id="rec">Aufnahme starten</button>
+  <div id="bar">
+    <button id="export">Export f&uuml;r PC</button>
+    <button id="wipe">Alle l&ouml;schen</button>
+  </div>
+  <div id="hint"></div>
+</div>
+
+<script>
+var $ = function (s) { return document.querySelector(s); };
+var KEY = 'ideen.entries.v1';
+
+/* ---------- Speicher ---------- */
+var entries = [];
+try { entries = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { entries = []; }
+
+function persist() {
+  try { localStorage.setItem(KEY, JSON.stringify(entries)); }
+  catch (e) { hint('Speichern fehlgeschlagen: ' + e.message, 'err'); }
+}
+
+function uid() {
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+/* ---------- Darstellung ---------- */
+var DAYFMT = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+var TIMEFMT = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' });
+
+function dayLabel(d) {
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var that = new Date(d); that.setHours(0, 0, 0, 0);
+  var diff = Math.round((today - that) / 86400000);
+  if (diff === 0) return 'Heute';
+  if (diff === 1) return 'Gestern';
+  return DAYFMT.format(d);
+}
+
+function render(newId) {
+  var list = $('#list');
+  list.innerHTML = '';
+  $('#count').textContent = entries.length
+    ? entries.length + (entries.length === 1 ? ' Eintrag' : ' Einträge')
+    : '';
+
+  if (!entries.length) {
+    list.innerHTML = '<div id="empty">Noch nichts aufgenommen.<br>' +
+      'Tippe unten auf <b>Aufnahme starten</b> und sprich einen Gedanken.</div>';
+    return;
+  }
+
+  var sorted = entries.slice().sort(function (a, b) { return b.ts - a.ts; });
+  var lastDay = null;
+
+  sorted.forEach(function (e) {
+    var d = new Date(e.ts);
+    var lbl = dayLabel(d);
+    if (lbl !== lastDay) {
+      lastDay = lbl;
+      var h = document.createElement('div');
+      h.className = 'day';
+      h.textContent = lbl;
+      list.appendChild(h);
+    }
+
+    var el = document.createElement('article');
+    el.className = 'item' + (e.id === newId ? ' new' : '');
+    el.innerHTML =
+      '<div class="txt"></div>' +
+      '<div class="meta"><time>' + TIMEFMT.format(d) + ' Uhr</time>' +
+      '<button class="edit">bearbeiten</button>' +
+      '<button class="del">löschen</button></div>';
+    el.querySelector('.txt').textContent = e.text;
+    list.appendChild(el);
+
+    var txt = el.querySelector('.txt');
+    var btn = el.querySelector('.edit');
+
+    btn.onclick = function () {
+      if (txt.getAttribute('contenteditable') === 'true') {
+        txt.setAttribute('contenteditable', 'false');
+        btn.textContent = 'bearbeiten';
+        var v = txt.textContent.trim();
+        if (v) { e.text = v; e.edited = Date.now(); } else { txt.textContent = e.text; }
+        persist();
+      } else {
+        txt.setAttribute('contenteditable', 'true');
+        btn.textContent = 'fertig';
+        txt.focus();
+        var r = document.createRange();
+        r.selectNodeContents(txt);
+        var s = getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      }
+    };
+
+    el.querySelector('.del').onclick = function () {
+      if (!confirm('Diesen Eintrag löschen?')) return;
+      entries = entries.filter(function (x) { return x.id !== e.id; });
+      persist();
+      render();
+    };
+  });
+}
+
+var hintTimer = null;
+function hint(msg, cls) {
+  var h = $('#hint');
+  h.textContent = msg || '';
+  h.className = cls || '';
+  clearTimeout(hintTimer);
+  if (msg) hintTimer = setTimeout(function () { h.textContent = ''; h.className = ''; }, 4500);
+}
+
+/* ---------- Spracherkennung ---------- */
+var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+var rec = null;         /* aktuelle Recognition-Instanz */
+var recording = false;  /* Aufnahme aus Nutzersicht aktiv */
+var stopping = false;   /* Nutzer hat Stop gedrueckt */
+var committed = '';     /* Text aus vorherigen Teilsitzungen dieser Aufnahme */
+var live = '';          /* Text der laufenden Teilsitzung */
+
+if (!SR) {
+  $('#rec').disabled = true;
+  $('#rec').textContent = 'Spracheingabe nicht verfügbar';
+  hint('Dieser Browser kennt die Spracherkennung nicht. Bitte Chrome verwenden.', 'err');
+}
+
+function fullText() {
+  return (committed + ' ' + live).replace(/\s+/g, ' ').trim();
+}
+
+function paintLive() {
+  var t = fullText();
+  var el = $('#live');
+  if (t) { el.classList.remove('ghost'); el.textContent = t; }
+  else { el.classList.add('ghost'); el.textContent = 'Sprich jetzt …'; }
+  el.scrollTop = el.scrollHeight;
+}
+
+function build() {
+  var r = new SR();
+  r.lang = 'de-DE';
+  r.continuous = true;
+  r.interimResults = true;
+  r.maxAlternatives = 1;
+
+  /* Chrome/Android markiert Teilergebnisse teils als isFinal und sendet den
+     wachsenden Satz erneut. Darum den Text je Teilsitzung komplett neu
+     aufbauen, statt Fragmente anzuhaengen. */
+  r.onresult = function (ev) {
+    var t = '';
+    for (var i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+    live = t.replace(/\s+/g, ' ').trim();
+    paintLive();
+  };
+
+  r.onerror = function (ev) {
+    if (ev.error === 'no-speech' || ev.error === 'aborted') return; /* onend startet neu */
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+      stopping = true;
+      hint('Mikrofon blockiert. In Chrome auf das Schloss tippen und freigeben.', 'err');
+    } else if (ev.error === 'network') {
+      stopping = true;
+      hint('Keine Verbindung — die Erkennung läuft über das Internet.', 'err');
+    } else {
+      hint('Fehler: ' + ev.error, 'err');
+    }
+  };
+
+  /* Android beendet die Erkennung oft von selbst nach kurzen Pausen. Solange
+     der Nutzer nicht gestoppt hat, nahtlos eine neue Sitzung anhaengen. */
+  r.onend = function () {
+    if (live) { committed = (committed + ' ' + live).trim(); live = ''; }
+    if (!stopping) {
+      try { rec = build(); rec.start(); return; }
+      catch (e) { /* faellt durch zum Abschluss */ }
+    }
+    finish();
+  };
+
+  return r;
+}
+
+function startRecording() {
+  committed = ''; live = '';
+  recording = true; stopping = false;
+  $('#live').classList.add('on');
+  paintLive();
+  $('#rec').classList.add('on');
+  $('#rec').textContent = '⏹ Stoppen & speichern';
+  hint('');
+  try { rec = build(); rec.start(); }
+  catch (e) { hint('Start fehlgeschlagen: ' + e.message, 'err'); finish(); }
+}
+
+function stopRecording() {
+  stopping = true;
+  $('#rec').textContent = 'wird gespeichert …';
+  try { rec && rec.stop(); } catch (e) { finish(); }
+}
+
+function finish() {
+  recording = false;
+  $('#rec').classList.remove('on');
+  $('#rec').textContent = 'Aufnahme starten';
+  $('#live').classList.remove('on');
+
+  var text = fullText();
+  committed = ''; live = '';
+  if (!text) { hint('Nichts verstanden — nichts gespeichert.', 'err'); return; }
+
+  var entry = { id: uid(), text: text, ts: Date.now(), source: 'voice' };
+  entries.push(entry);
+  persist();
+  render(entry.id);
+  hint('Gespeichert.', 'good');
+}
+
+$('#rec').onclick = function () { recording ? stopRecording() : startRecording(); };
+
+/* ---------- Export fuer den PC ---------- */
+$('#export').onclick = function () {
+  if (!entries.length) { hint('Nichts zu exportieren.', 'err'); return; }
+  var now = new Date();
+  var pad = function (n) { return String(n).padStart(2, '0'); };
+  var stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+    '-' + pad(now.getHours()) + pad(now.getMinutes());
+  var payload = {
+    app: 'ideen-recorder',
+    version: 1,
+    exportedAt: now.toISOString(),
+    device: navigator.userAgent,
+    count: entries.length,
+    entries: entries.slice().sort(function (a, b) { return a.ts - b.ts; })
+  };
+  var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'ideen-' + stamp + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  hint(entries.length + ' Einträge im Download-Ordner abgelegt.', 'good');
+};
+
+$('#wipe').onclick = function () {
+  if (!entries.length) return;
+  if (!confirm('Wirklich ALLE ' + entries.length + ' Einträge löschen?\n\nVorher exportieren!')) return;
+  entries = [];
+  persist();
+  render();
+  hint('Alles gelöscht.');
+};
+
+render();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js')['catch'](function () {});
+}
+</script>
+</body>
+</html>
